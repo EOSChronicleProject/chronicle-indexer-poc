@@ -130,16 +130,19 @@ sub process_data
     elsif( $msgtype == 1003 ) # CHRONICLE_MSGTYPE_TX_TRACE
     {
         my $trace = $data->{'trace'};
-        my $block_num = $data->{'block_num'};
-        my $irreversible = ($last_irreversible >= $block_num)?1:0;
-        
-        $sth_ins_trx->execute($trace->{'transaction_id'}, $data->{'block_timestamp'},
-                              $block_num, $irreversible);
-        my $trx_seq = $sth_ins_trx->last_insert_id();
-        
-        foreach my $atrace (@{$trace->{'traces'}})
+        if( $trace->{'status'} eq 'executed' )
         {
-            process_atrace($trx_seq, $atrace, 0);
+            my $block_num = $data->{'block_num'};
+            my $irreversible = ($last_irreversible >= $block_num)?1:0;
+            
+            $sth_ins_trx->execute($trace->{'transaction_id'}, $data->{'block_timestamp'},
+                                  $block_num, $irreversible);
+            my $trx_seq = $sth_ins_trx->last_insert_id();
+            
+            foreach my $atrace (@{$trace->{'traces'}})
+            {
+                process_atrace($trx_seq, $atrace, 0);
+            }
         }
     }
     elsif( $msgtype == 1009 ) # CHRONICLE_MSGTYPE_RCVR_PAUSE
