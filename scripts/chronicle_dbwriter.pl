@@ -99,6 +99,10 @@ Net::WebSocket::Server->new(
             'disconnect' => sub {
                 my ($conn, $code) = @_;
                 print STDERR "Disconnected: $code\n";
+                $dbh->rollback();
+                $committed_block = 0;
+                $uncommitted_block = 0;
+                $last_irreversible = 0;
             },
             
             );
@@ -114,18 +118,12 @@ sub process_data
     if( $msgtype == 1001 ) # CHRONICLE_MSGTYPE_FORK
     {
         my $block_num = $data->{'block_num'};
+        print STDERR "fork at $block_num\n";
         $sth_wipe->execute($block_num);
         $dbh->commit();
         $committed_block = $block_num;
+        $uncommitted_block = 0;
         return $block_num;
-    }
-    elsif( $msgtype == 1002 ) # CHRONICLE_MSGTYPE_BLOCK
-    {
-        $last_irreversible = $data->{'last_irreversible'};
-        if( $last_irreversible < $uncommitted_block )
-        {
-            $sth_set_irrev->execute($last_irreversible);
-        }
     }
     elsif( $msgtype == 1003 ) # CHRONICLE_MSGTYPE_TX_TRACE
     {
@@ -159,8 +157,13 @@ sub process_data
         $uncommitted_block = $data->{'block_num'};
         if( $uncommitted_block - $committed_block >= $commit_every )
         {
+            if( $last_irreversible < $uncommitted_block )
+            {
+                $sth_set_irrev->execute($data->{'last_irreversible'});
+            }
             $dbh->commit();
             $committed_block = $uncommitted_block;
+            $last_irreversible = $data->{'last_irreversible'};
             return $committed_block;
         }
     }
