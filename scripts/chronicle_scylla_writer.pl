@@ -1,13 +1,13 @@
 # install dependencies:
 #  sudo apt install cpanminus libjson-xs-perl libjson-perl libmysqlclient-dev libdbi-perl libdatetime-format-iso8601-perl
 #  sudo cpanm Net::WebSocket::Server
-#  sudo cpanm DBD::Cassandra
+#  sudo cpanm Cassandra::Client;
 
 use strict;
 use warnings;
 use JSON;
 use Getopt::Long;
-use DBI;
+use Cassandra::Client;
 use DateTime;
 use DateTime::Format::ISO8601;
 
@@ -21,7 +21,8 @@ $| = 1;
 
 my $port = 8800;
 
-my $dsn = 'DBI:Cassandra:host=10.0.3.35;keyspace=eosidx';
+my $db_host = '10.0.3.35';
+my $db_keyspace = 'eosidx';
 my $db_user = 'cassandra';
 my $db_password = 'cassandra';
 my $ack_every = 10;
@@ -29,7 +30,8 @@ my $ack_every = 10;
 my $ok = GetOptions
     ('port=i'    => \$port,
      'ack=i'     => \$ack_every,
-     'dsn=s'     => \$dsn,
+     'dbhost=s'  => \$db_host,
+     'dbks=s'    => \$db_keyspace,
      'dbuser=s'  => \$db_user,
      'dbpw=s'    => \$db_password,
     );
@@ -41,39 +43,27 @@ if( not $ok or scalar(@ARGV) > 0 )
     "Options:\n",
     "  --port=N           \[$port\] TCP port to listen to websocket connection\n",
     "  --ack=N            \[$ack_every\] Send acknowledgements every N blocks\n",
-    "  --dsn=DSN          \[$dsn\]\n",
+    "  --dbost=HOST       \[$db_host\]\n",
+    "  --dbks=KEYSPACE    \[$db_keyspace\]\n",
     "  --dbuser=USER      \[$db_user\]\n",
     "  --dbpw=PASSWORD    \[$db_password\]\n";
     exit 1;
 }
 
-
-my $dbh = DBI->connect($dsn, $db_user, $db_password,
-                       {'RaiseError' => 1 });
-die($DBI::errstr) unless $dbh;
-
-
-my $sth_get_head = $dbh->prepare('SELECT ptr FROM EOSIDX_PTR WHERE id=0');
-
-my $sth_set_head = $dbh->prepare('UPDATE EOSIDX_PTR SET ptr=? WHERE id=0');
-
-my $sth_wipe_blk = $dbh->prepare
-    ('DELETE FROM EOSIDX_ACTIONS WHERE block_num=?');
-
-my $sth_ins_action = $dbh->prepare
-    ('INSERT INTO EOSIDX_ACTIONS ' .
-     '(block_num, block_time, trx_id, global_action_seq, parent,' .
-     'contract, action_name, receiver, recv_sequence) ' .
-     'VALUES(?,?,?,?,?,?,?,?,?)');
-
-my $sth_set_irrev = $dbh->prepare
-    ('UPDATE EOSIDX_PTR SET ptr=? WHERE id=1');
+my $db= Cassandra::Client->new(
+    contact_points => [$db_host],
+    username => $db_user,
+    password => $db_password,
+    keyspace => $db_keyspace,
+    );
+$db->connect();
 
 
 my $confirmed_block = 0;
 my $unconfirmed_block = 0;
 my $last_irreversible = 0;
 my $json = JSON->new;
+my @batch;
 
 Net::WebSocket::Server->new(
     listen => $port,
@@ -121,18 +111,22 @@ sub process_data
         my $block_num = $data->{'block_num'};
         print STDERR "fork at $block_num\n";
 
-        $sth_get_head->execute();
-        my $r = $sth_get_head->fetchall_arrayref();
-        if( scalar(@{$r}) > 0 )
+        my ($r) = $db->execute('SELECT ptr FROM pointers WHERE id=0');
+        my $rows = $r->rows();
+        if( scalar(@{$rows}) > 0 )
         {
-            my $head = $r->[0][0];
+            my $head = $rows->[0][0];
+            printf STDERR "Head: $head - deleting $block_num to $head\n";
             while( $head >= $block_num )
             {
-                $sth_wipe_blk->execute($head);
+                push(@batch, ['DELETE FROM actions WHERE block_num=?', [$head]]);
                 $head--;
             }
         }
-        $sth_set_head->execute($block_num - 1);
+
+        push(@batch, ['UPDATE pointers SET ptr=? WHERE id=0', [$block_num - 1]]);
+        write_batch();
+        
         $confirmed_block = $block_num;
         $unconfirmed_block = 0;
         return $block_num;
@@ -146,7 +140,7 @@ sub process_data
             $bt->set_time_zone('UTC');
             
             my $tx = {'block_num' => $data->{'block_num'},
-                      'block_time' => $bt->hires_epoch() * 1000,
+                      'block_time' => 1000 * $bt->hires_epoch(),
                       'trx_id' => $trace->{'transaction_id'}};
             
             foreach my $atrace (@{$trace->{'traces'}})
@@ -166,22 +160,36 @@ sub process_data
     elsif( $msgtype == 1010 ) # CHRONICLE_MSGTYPE_BLOCK_COMPLETED
     {
         my $block_num = $data->{'block_num'};
-        $sth_set_head->execute($block_num);
+        push(@batch, ['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
+        push(@batch, ['UPDATE pointers SET ptr=? WHERE id=1', [$data->{'last_irreversible'}]]);
+        write_batch();
+        
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
         {
-            if( $last_irreversible < $unconfirmed_block )
-            {
-                $sth_set_irrev->execute($data->{'last_irreversible'});
-            }
             $confirmed_block = $unconfirmed_block;
-            $last_irreversible = $data->{'last_irreversible'};
             return $confirmed_block;
         }
     }
 
     return 0;
 }
+
+
+sub write_batch
+{
+    while( scalar(@batch) > 0 )
+    {
+        my @job;
+        while( scalar(@job) < 50 and scalar(@batch) > 0 )
+        {
+            push(@job, shift(@batch));
+        }
+        $db->batch(\@job);
+    }
+}
+    
+     
 
 
 sub process_atrace
@@ -193,9 +201,14 @@ sub process_atrace
     my $receipt = $atrace->{'receipt'};
     my $seq = $receipt->{'global_sequence'};
     
-    $sth_ins_action->execute($tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
-                             $seq, $parent, $atrace->{'account'},
-                             $atrace->{'name'}, $receipt->{'receiver'}, $receipt->{'recv_sequence'});
+    push(@batch,
+         ['INSERT INTO actions ' .
+          '(block_num, block_time, trx_id, global_action_seq, parent,' .
+          'contract, action_name, receiver) ' .
+          'VALUES(?,?,?,?,?,?,?,?)',
+          [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
+           $seq, $parent, $atrace->{'account'},
+           $atrace->{'name'}, $receipt->{'receiver'}]]);
     
     if( defined($atrace->{'inline_traces'}) )
     {
