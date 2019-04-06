@@ -55,6 +55,7 @@ my $db= Cassandra::Client->new(
     username => $db_user,
     password => $db_password,
     keyspace => $db_keyspace,
+    request_timeout => 60,
     );
 $db->connect();
 
@@ -64,6 +65,35 @@ my $unconfirmed_block = 0;
 my $last_irreversible = 0;
 my $json = JSON->new;
 my @batch;
+
+
+my %eosio_act_recipients =
+    (
+     'newaccount'    => ['name'],
+     'setcode'       => ['account'],
+     'setabi'        => ['account'],
+     'updateauth'    => ['account'],
+     'deleteauth'    => ['account'],
+     'linkauth'      => ['account'],
+     'unlinkauth'    => ['account'],
+     'buyrambytes'   => ['payer', 'receiver'],
+     'buyram'        => ['payer', 'receiver'],
+     'sellram'       => ['account'],
+     'delegatebw'    => ['from', 'receiver'],
+     'undelegatebw'  => ['from', 'receiver'],
+     'unlinkauth'    => ['owner'],
+     'regproducer'   => ['producer'],
+     'unregprod'     => ['producer'],
+     'regproxy'      => ['proxy'],
+     'voteproducer'  => ['voter', 'proxy'],
+     'claimrewards'  => ['owner'],
+    );
+     
+     
+
+     
+
+
 
 Net::WebSocket::Server->new(
     listen => $port,
@@ -200,16 +230,37 @@ sub process_atrace
 
     my $receipt = $atrace->{'receipt'};
     my $seq = $receipt->{'global_sequence'};
-    
-    push(@batch,
-         ['INSERT INTO actions ' .
-          '(block_num, block_time, trx_id, global_action_seq, parent,' .
-          'contract, action_name, receiver) ' .
-          'VALUES(?,?,?,?,?,?,?,?)',
-          [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
-           $seq, $parent, $atrace->{'account'},
-           $atrace->{'name'}, $receipt->{'receiver'}]]);
-    
+
+    my %receivers = ($receipt->{'receiver'} => 1);
+
+    if( $atrace->{'account'} eq 'eosio' and ref($atrace->{'data'}) eq 'HASH' )
+    {
+        my $aname = $atrace->{'name'};
+        if( defined($eosio_act_recipients{$aname}) )
+        {
+            foreach my $field (@{$eosio_act_recipients{$aname}})
+            {
+                my $rcvr = $atrace->{'data'}{$field};
+                if( defined($rcvr) and $rcvr ne '' )
+                {
+                    $receivers{$rcvr} = 1;
+                }
+            }
+        }
+    }
+
+    foreach my $rcvr (keys %receivers)
+    {   
+        push(@batch,
+             ['INSERT INTO actions ' .
+              '(block_num, block_time, trx_id, global_action_seq, parent,' .
+              'contract, action_name, receiver) ' .
+              'VALUES(?,?,?,?,?,?,?,?)',
+              [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
+               $seq, $parent, $atrace->{'account'},
+               $atrace->{'name'}, $rcvr]]);
+    }
+        
     if( defined($atrace->{'inline_traces'}) )
     {
         foreach my $trace (@{$atrace->{'inline_traces'}})
