@@ -211,7 +211,7 @@ sub write_batch
     while( scalar(@batch) > 0 )
     {
         my @job;
-        while( scalar(@job) < 50 and scalar(@batch) > 0 )
+        while( scalar(@job) < 10 and scalar(@batch) > 0 )
         {
             push(@job, shift(@batch));
         }
