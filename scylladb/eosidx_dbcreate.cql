@@ -28,14 +28,6 @@ CREATE MATERIALIZED VIEW receiver_bloks AS
     WITH CLUSTERING ORDER BY (block_num DESC);
 
 
-CREATE MATERIALIZED VIEW contract_bloks AS
-    SELECT contract, block_num, block_time, trx_id, global_action_seq, parent, contract, action_name
-    FROM actions
-    WHERE contract IS NOT NULL AND global_action_seq IS NOT NULL AND block_num IS NOT NULL AND receiver IS NOT NULL
-    PRIMARY KEY (contract, block_num, global_action_seq, receiver)
-    WITH CLUSTERING ORDER BY (block_num DESC);
-
-
 
 
 /* id=0: last written block, id=1: irreversible block */
