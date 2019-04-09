@@ -237,8 +237,7 @@ sub process_data
 
         if( not $writing_traces )
         {
-            if( $block_num < $last_irreversible and
-                $block_num + $trace_blocks >= $last_irreversible )
+            if( $block_num + $trace_blocks >= $last_irreversible )
             {
                 $lowest_trace_block = $block_num+1;
                 $writing_traces = 1;
