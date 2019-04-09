@@ -29,8 +29,20 @@ CREATE MATERIALIZED VIEW receiver_bloks AS
 
 
 
+CREATE TABLE traces
+ (
+ block_num         BIGINT,
+ trx_id            ASCII,
+ jsdata            BLOB,
+ PRIMARY KEY (block_num, trx_id)
+ );
 
-/* id=0: last written block, id=1: irreversible block */
+CREATE INDEX traces_trx_id ON traces (trx_id);
+
+
+/* id=0: last written block,
+   id=1: irreversible block,
+   id=2: lowest block with traces */
 CREATE TABLE pointers
  (
  id INT PRIMARY KEY,
