@@ -55,7 +55,7 @@ my $db= Cassandra::Client->new(
     username => $db_user,
     password => $db_password,
     keyspace => $db_keyspace,
-    request_timeout => 60,
+    request_timeout => 300,
     );
 $db->connect();
 
@@ -249,6 +249,11 @@ sub process_atrace
         }
     }
 
+    foreach my $auth (@{$atrace->{'authorization'}})
+    {
+        $receivers{$auth->{'actor'}} = 1;
+    }
+    
     foreach my $rcvr (keys %receivers)
     {   
         push(@batch,
