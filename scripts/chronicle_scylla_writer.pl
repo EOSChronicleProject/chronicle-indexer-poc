@@ -75,7 +75,7 @@ my $lowest_trace_block;
     my $rows = $r->rows();
     if( scalar(@{$rows}) > 0 )
     {
-        my $lowest_trace_block = $rows->[0][0];
+        $lowest_trace_block = $rows->[0][0];
         printf STDERR "Lowest block with JSON traces: $lowest_trace_block\n";
     }
 }
@@ -165,7 +165,7 @@ sub process_data
             while( $head >= $block_num )
             {
                 push(@batch, ['DELETE FROM actions WHERE block_num=?', [$head]]);
-                if( defined($lowest_trace_block) )
+                if( $writing_traces )
                 {
                     push(@batch, ['DELETE FROM traces WHERE block_num=?', [$head]]);
                 }
@@ -178,12 +178,7 @@ sub process_data
                 {
                     $lowest_trace_block = undef;
                     $writing_traces = 0;
-                    push(@batch, ['DELETE FROM pointers WHERE id=2']);
-                }
-                else
-                {
-                    $lowest_trace_block = $head;
-                    push(@batch, ['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                    push(@batch, ['DELETE FROM pointers WHERE id=2', []]);
                 }
             }
         }
@@ -247,11 +242,18 @@ sub process_data
         }
         else
         {
-            while( $lowest_trace_block + $trace_blocks >= $block_num )
+            while( $lowest_trace_block + $trace_blocks < $last_irreversible )
             {
                 push(@batch, ['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
-                $lowest_trace_block--;
+                $lowest_trace_block++;
                 push(@batch, ['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                if( $lowest_trace_block > $block_num )
+                {
+                    $lowest_trace_block = undef;
+                    $writing_traces = 0;
+                    push(@batch, ['DELETE FROM pointers WHERE id=2', []]);
+                    last;
+                }
             }
         }
                 

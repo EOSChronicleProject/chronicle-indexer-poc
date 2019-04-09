@@ -37,7 +37,6 @@ CREATE TABLE traces
  PRIMARY KEY (block_num, trx_id)
  );
 
-CREATE INDEX traces_trx_id ON traces (trx_id);
 
 
 /* id=0: last written block,
