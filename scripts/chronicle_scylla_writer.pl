@@ -161,25 +161,23 @@ sub process_data
         if( scalar(@{$rows}) > 0 )
         {
             my $head = $rows->[0][0];
+            if( $writing_traces and $lowest_trace_block >= $block_num )
+            {
+                printf STDERR "Fork block $block_num is below the lowest trace block $lowest_trace_block\n";
+                while( $lowest_trace_block <= $head )
+                {
+                    push(@batch, ['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
+                    $lowest_trace_block++;
+                    push(@batch, ['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                }
+                push(@batch, ['DELETE FROM pointers WHERE id=2', []]);
+            }
+                
             printf STDERR "Head: $head - deleting $block_num to $head\n";
             while( $head >= $block_num )
             {
                 push(@batch, ['DELETE FROM actions WHERE block_num=?', [$head]]);
-                if( $writing_traces )
-                {
-                    push(@batch, ['DELETE FROM traces WHERE block_num=?', [$head]]);
-                }
                 $head--;
-            }
-
-            if( $writing_traces )
-            {
-                if( $lowest_trace_block > $head )
-                {
-                    $lowest_trace_block = undef;
-                    $writing_traces = 0;
-                    push(@batch, ['DELETE FROM pointers WHERE id=2', []]);
-                }
             }
         }
 
