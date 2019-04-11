@@ -3,6 +3,13 @@
 #  sudo cpanm Net::WebSocket::Server
 #  sudo cpanm Cassandra::Client;
 
+## the following values need to be set in /etc/scylla/scylla.yaml:
+# batch_size_warn_threshold_in_kb: 4500
+# batch_size_fail_threshold_in_kb: 5000
+## It's much higher than recommended value. The production writer should
+## send small batches in multiple threads.
+
+
 use strict;
 use warnings;
 use JSON;
@@ -32,7 +39,7 @@ my $trace_blocks = 7200*24*7;
 my $ok = GetOptions
     ('port=i'    => \$port,
      'ack=i'     => \$ack_every,
-     'traceblk=i' => $trace_blocks,
+     'traceblk=i' => \$trace_blocks,
      'dbhost=s'  => \$db_host,
      'dbks=s'    => \$db_keyspace,
      'dbuser=s'  => \$db_user,
@@ -69,6 +76,7 @@ my $unconfirmed_block = 0;
 my $last_irreversible = 0;
 my $json = JSON->new;
 my @batch;
+my @traces_batch;
 
 my $lowest_trace_block;
 {
@@ -221,8 +229,9 @@ sub process_data
             
             if( $writing_traces )
             {
-                $db->execute('INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
-                             [$block_num, $trx_id, ${$jsptr}]);
+                push(@traces_batch,
+                     ['INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
+                      [$block_num, $trx_id, ${$jsptr}]]);
                 $traces_counter++;
             }
         }
@@ -269,11 +278,11 @@ sub process_data
                 
         push(@batch, ['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
         push(@batch, ['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
-        write_batch();
         
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
         {
+            write_batch();
             $confirmed_block = $unconfirmed_block;
             return $confirmed_block;
         }
@@ -285,10 +294,20 @@ sub process_data
 
 sub write_batch
 {
+    while( scalar(@traces_batch) > 0 )
+    {
+        my @job;
+        while( scalar(@job) < 50 and scalar(@traces_batch) > 0 )
+        {
+            push(@job, shift(@traces_batch));
+        }
+        $db->batch(\@job);
+    }
+
     while( scalar(@batch) > 0 )
     {
         my @job;
-        while( scalar(@job) < 10 and scalar(@batch) > 0 )
+        while( scalar(@job) < 500 and scalar(@batch) > 0 )
         {
             push(@job, shift(@batch));
         }
