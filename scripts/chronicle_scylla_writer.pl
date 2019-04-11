@@ -106,7 +106,9 @@ my %eosio_act_recipients =
     );
      
      
-
+my $actions_counter = 0;
+my $traces_counter = 0;
+my $counter_start = time();
 
 
 Net::WebSocket::Server->new(
@@ -129,7 +131,15 @@ Net::WebSocket::Server->new(
                 if( $ack > 0 )
                 {
                     $conn->send_binary(sprintf("%d", $ack));
-                    print STDERR "ack $ack\n";
+                    my $period = time() - $counter_start;
+                    if( $period > 0 )
+                    {
+                        printf STDERR ("ack %d, actions/s: %f, traces/s: %f\n",
+                                       $ack, $actions_counter/$period, $traces_counter/$period);
+                        $counter_start = time();
+                        $actions_counter = 0;
+                        $traces_counter = 0;
+                    }
                 }
             },
             'disconnect' => sub {
@@ -212,6 +222,7 @@ sub process_data
             {
                 $db->execute('INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
                              [$block_num, $trx_id, ${$jsptr}]);
+                $traces_counter++;
             }
         }
     }
@@ -329,6 +340,7 @@ sub process_atrace
               [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
                $seq, $parent, $atrace->{'account'},
                $atrace->{'name'}, $rcvr]]);
+       $actions_counter++;
     }
         
     if( defined($atrace->{'inline_traces'}) )
