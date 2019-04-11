@@ -10,6 +10,7 @@ use Getopt::Long;
 use Cassandra::Client;
 use DateTime;
 use DateTime::Format::ISO8601;
+use Time::HiRes qw (time);
 
 use Net::WebSocket::Server;
 use Protocol::WebSocket::Frame;
@@ -134,8 +135,8 @@ Net::WebSocket::Server->new(
                     my $period = time() - $counter_start;
                     if( $period > 0 )
                     {
-                        printf STDERR ("ack %d, actions/s: %f, traces/s: %f\n",
-                                       $ack, $actions_counter/$period, $traces_counter/$period);
+                        printf STDERR ("ack %d, period: %.2f, actions/s: %.2f, traces/s: %.2f\n",
+                                       $ack, $period, $actions_counter/$period, $traces_counter/$period);
                         $counter_start = time();
                         $actions_counter = 0;
                         $traces_counter = 0;
