@@ -110,8 +110,7 @@ my %eosio_act_recipients =
     );
      
      
-my $actions_counter = 0;
-my $traces_counter = 0;
+my $dbupdates_counter = 0;
 my $counter_start = time();
 
 
@@ -138,11 +137,10 @@ Net::WebSocket::Server->new(
                     my $period = time() - $counter_start;
                     if( $period > 0 )
                     {
-                        printf STDERR ("ack %d, period: %.2f, actions/s: %.2f, traces/s: %.2f\n",
-                                       $ack, $period, $actions_counter/$period, $traces_counter/$period);
+                        printf STDERR ("ack %d, period: %.2f, updates/s: %.2f\n",
+                                       $ack, $period, $dbupdates_counter/$period);
                         $counter_start = time();
-                        $actions_counter = 0;
-                        $traces_counter = 0;
+                        $dbupdates_counter = 0;
                     }
                 }
             },
@@ -227,7 +225,6 @@ sub process_data
                 push(@traces_batch,
                      ['INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
                       [$block_num, $trx_id, ${$jsptr}]]);
-                $traces_counter++;
             }
         }
     }
@@ -292,6 +289,7 @@ sub write_batch
     while( scalar(@traces_batch) > 0 )
     {
         $db->execute(@{shift(@traces_batch)});
+        $dbupdates_counter++;
     }
 
     while( scalar(@batch) > 0 )
@@ -300,6 +298,7 @@ sub write_batch
         while( scalar(@job) < 10 and scalar(@batch) > 0 )
         {
             push(@job, shift(@batch));
+            $dbupdates_counter++;
         }
         $db->batch(\@job);
     }
@@ -350,7 +349,6 @@ sub process_atrace
               [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
                $seq, $parent, $atrace->{'account'},
                $atrace->{'name'}, $rcvr]]);
-       $actions_counter++;
     }
         
     if( defined($atrace->{'inline_traces'}) )
