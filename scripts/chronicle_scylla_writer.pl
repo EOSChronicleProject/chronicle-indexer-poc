@@ -3,11 +3,6 @@
 #  sudo cpanm Net::WebSocket::Server
 #  sudo cpanm Cassandra::Client;
 
-## the following values need to be set in /etc/scylla/scylla.yaml:
-# batch_size_warn_threshold_in_kb: 4500
-# batch_size_fail_threshold_in_kb: 5000
-## It's much higher than recommended value. The production writer should
-## send small batches in multiple threads.
 
 
 use strict;
@@ -33,7 +28,7 @@ my $db_host = '10.0.3.35';
 my $db_keyspace = 'eosidx';
 my $db_user = 'cassandra';
 my $db_password = 'cassandra';
-my $ack_every = 10;
+my $ack_every = 120;
 my $trace_blocks = 7200*24*7;
 
 my $ok = GetOptions
@@ -296,18 +291,13 @@ sub write_batch
 {
     while( scalar(@traces_batch) > 0 )
     {
-        my @job;
-        while( scalar(@job) < 50 and scalar(@traces_batch) > 0 )
-        {
-            push(@job, shift(@traces_batch));
-        }
-        $db->batch(\@job);
+        $db->execute(@{shift(@traces_batch)});
     }
 
     while( scalar(@batch) > 0 )
     {
         my @job;
-        while( scalar(@job) < 500 and scalar(@batch) > 0 )
+        while( scalar(@job) < 10 and scalar(@batch) > 0 )
         {
             push(@job, shift(@batch));
         }
