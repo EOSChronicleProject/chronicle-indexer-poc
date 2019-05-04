@@ -111,6 +111,7 @@ my %eosio_act_recipients =
      
      
 my $dbupdates_counter = 0;
+my $blocks_counter = 0;
 my $counter_start = time();
 
 
@@ -137,10 +138,11 @@ Net::WebSocket::Server->new(
                     my $period = time() - $counter_start;
                     if( $period > 0 )
                     {
-                        printf STDERR ("ack %d, period: %.2f, updates/s: %.2f\n",
-                                       $ack, $period, $dbupdates_counter/$period);
+                        printf STDERR ("ack %d, period: %.2f, updates/s: %.2f, blocks/s: %.2f\n",
+                                       $ack, $period, $dbupdates_counter/$period, $blocks_counter/$period);
                         $counter_start = time();
                         $dbupdates_counter = 0;
+                        $blocks_counter = 0;
                     }
                 }
             },
@@ -270,6 +272,7 @@ sub process_data
                 
         push(@batch, ['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
         push(@batch, ['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+        $blocks_counter++;
         
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
