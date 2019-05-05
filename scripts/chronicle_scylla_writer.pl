@@ -274,10 +274,11 @@ sub process_data
         push(@batch, ['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
         $blocks_counter++;
         
+        write_batch();
+        
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
         {
-            write_batch();
             $confirmed_block = $unconfirmed_block;
             return $confirmed_block;
         }
