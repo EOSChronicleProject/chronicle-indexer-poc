@@ -10,8 +10,7 @@ use warnings;
 use JSON;
 use Getopt::Long;
 use Cassandra::Client;
-use DateTime;
-use DateTime::Format::ISO8601;
+use Time::Local 'timegm_nocheck';
 use Time::HiRes qw (time);
 
 use Net::WebSocket::Server;
@@ -109,7 +108,14 @@ my %eosio_act_recipients =
      'claimrewards'  => ['owner'],
     );
      
-     
+
+my $insert_action =
+    'INSERT INTO actions ' .
+    '(block_num,block_time,trx_id,global_action_seq,parent,' .
+    'contract,action_name,receiver) ' .
+    'VALUES(?,?,?,?,?,?,?,?)';
+
+
 my $dbupdates_counter = 0;
 my $blocks_counter = 0;
 my $counter_start = time();
@@ -209,19 +215,19 @@ sub process_data
         {
             my $block_num = $data->{'block_num'};
             my $trx_id = $trace->{'transaction_id'};
-            my $bt = DateTime::Format::ISO8601->parse_datetime($data->{'block_timestamp'});
-            $bt->set_time_zone('UTC');
+
+            my ($year, $mon, $mday, $hour, $min, $sec, $msec) =
+                split(/[-:.T]/, $data->{'block_timestamp'});
+
+            my $epoch = timegm_nocheck($sec, $min, $hour, $mday, $mon-1, $year);
                 
-            my $tx = {'block_num' => $block_num,
-                      'block_time' => 1000 * $bt->hires_epoch(),
-                      'trx_id' => $trx_id};
+            my $tx = [$block_num, 1000 * $epoch + $msec, $trx_id];
             
             foreach my $atrace (@{$trace->{'traces'}})
             {
                 process_atrace($tx, $atrace, 0);
             }
 
-            
             if( $writing_traces )
             {
                 push_trace(
@@ -358,15 +364,11 @@ sub process_atrace
     foreach my $rcvr (keys %receivers)
     {   
         push(@batch,
-             ['INSERT INTO actions ' .
-              '(block_num, block_time, trx_id, global_action_seq, parent,' .
-              'contract, action_name, receiver) ' .
-              'VALUES(?,?,?,?,?,?,?,?)',
-              [$tx->{'block_num'}, $tx->{'block_time'}, $tx->{'trx_id'},
-               $seq, $parent, $atrace->{'account'},
-               $atrace->{'name'}, $rcvr]]);
+             [ $insert_action, 
+               [@{$tx}, $seq, $parent, $atrace->{'account'},
+                $atrace->{'name'}, $rcvr]]);
     }
-        
+    
     if( defined($atrace->{'inline_traces'}) )
     {
         foreach my $trace (@{$atrace->{'inline_traces'}})
