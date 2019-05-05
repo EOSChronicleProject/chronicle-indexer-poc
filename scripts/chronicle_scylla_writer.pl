@@ -180,22 +180,22 @@ sub process_data
                 printf STDERR "Fork block $block_num is below the lowest trace block $lowest_trace_block\n";
                 while( $lowest_trace_block <= $head )
                 {
-                    push_db(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
+                    push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
                     $lowest_trace_block++;
-                    push_db(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                    push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
                 }
-                push_db(['DELETE FROM pointers WHERE id=2', []]);
+                push_upd(['DELETE FROM pointers WHERE id=2', []]);
             }
                 
             printf STDERR "Head: $head - deleting $block_num to $head\n";
             while( $head >= $block_num )
             {
-                push_db(['DELETE FROM actions WHERE block_num=?', [$head]]);
+                push_upd(['DELETE FROM actions WHERE block_num=?', [$head]]);
                 $head--;
             }
         }
 
-        push_db(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num - 1]]);
+        push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num - 1]]);
         write_batch();
         
         $confirmed_block = $block_num;
@@ -224,9 +224,9 @@ sub process_data
             
             if( $writing_traces )
             {
-                push(@traces_batch,
-                     ['INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
-                      [$block_num, $trx_id, ${$jsptr}]]);
+                push_trace(
+                    ['INSERT INTO traces (block_num, trx_id, jsdata) VALUES(?,?,?)',
+                     [$block_num, $trx_id, ${$jsptr}]]);
             }
         }
     }
@@ -249,7 +249,7 @@ sub process_data
             {
                 $lowest_trace_block = $block_num+1;
                 $writing_traces = 1;
-                push_db(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
                 printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
             }
         }
@@ -257,21 +257,21 @@ sub process_data
         {
             while( $lowest_trace_block + $trace_blocks < $last_irreversible )
             {
-                push_db(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
+                push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
                 $lowest_trace_block++;
-                push_db(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
                 if( $lowest_trace_block > $block_num )
                 {
                     $lowest_trace_block = undef;
                     $writing_traces = 0;
-                    push_db(['DELETE FROM pointers WHERE id=2', []]);
+                    push_upd(['DELETE FROM pointers WHERE id=2', []]);
                     last;
                 }
             }
         }
                 
-        push_db(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
-        push_db(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+        push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
+        push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
         $blocks_counter++;
         
         write_batch();
@@ -288,10 +288,17 @@ sub process_data
 }
 
 
-sub push_db
+sub push_upd
 {
     push(@batch, $_[0]);
 }
+
+sub push_trace
+{
+    push(@traces_batch, $_[0]);
+}
+
+
 
 sub write_batch
 {
