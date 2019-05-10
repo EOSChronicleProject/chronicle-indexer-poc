@@ -8,7 +8,7 @@ CREATE TABLE actions
  (
  block_num         BIGINT,
  block_time        TIMESTAMP,
- trx_id            ASCII,
+ trx_id            BLOB,
  global_action_seq BIGINT,
  parent            BIGINT,
  contract          ASCII,
@@ -26,6 +26,8 @@ CREATE MATERIALIZED VIEW receiver_bloks AS
     WHERE receiver IS NOT NULL AND global_action_seq IS NOT NULL AND block_num IS NOT NULL
     PRIMARY KEY (receiver, block_num, global_action_seq)
     WITH CLUSTERING ORDER BY (block_num DESC);
+
+
 
 
 

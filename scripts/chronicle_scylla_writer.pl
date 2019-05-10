@@ -214,7 +214,7 @@ sub process_data
         if( $trace->{'status'} eq 'executed' )
         {
             my $block_num = $data->{'block_num'};
-            my $trx_id = $trace->{'transaction_id'};
+            my $trx_id = pack('h*', $trace->{'transaction_id'});
 
             my ($year, $mon, $mday, $hour, $min, $sec, $msec) =
                 split(/[-:.T]/, $data->{'block_timestamp'});
