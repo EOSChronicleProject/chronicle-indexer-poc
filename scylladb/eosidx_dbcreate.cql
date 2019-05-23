@@ -34,7 +34,7 @@ CREATE MATERIALIZED VIEW receiver_bloks AS
 CREATE TABLE traces
  (
  block_num         BIGINT,
- trx_id            ASCII,
+ trx_id            BLOB,
  jsdata            BLOB,
  PRIMARY KEY (block_num, trx_id)
  );
