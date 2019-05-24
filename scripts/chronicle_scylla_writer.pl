@@ -23,6 +23,9 @@ $| = 1;
 
 my $port = 8800;
 
+my $interactive;
+my $interactive_range;
+    
 my $db_host = '10.0.3.35';
 my $db_keyspace = 'eosidx';
 my $db_user = 'cassandra';
@@ -34,6 +37,8 @@ my $ok = GetOptions
     ('port=i'    => \$port,
      'ack=i'     => \$ack_every,
      'traceblk=i' => \$trace_blocks,
+     'interactive' => \$interactive,
+     'range=s'   => \$interactive_range,
      'dbhost=s'  => \$db_host,
      'dbks=s'    => \$db_keyspace,
      'dbuser=s'  => \$db_user,
@@ -48,6 +53,8 @@ if( not $ok or scalar(@ARGV) > 0 )
     "  --port=N           \[$port\] TCP port to listen to websocket connection\n",
     "  --ack=N            \[$ack_every\] Send acknowledgements every N blocks\n",
     "  --traceblk=N       \[$trace_blocks\] Keep JSON traces for so many blocks from head\n",
+    "  --interactive      run interactive Chronicle consumer\n",
+    "  --range=M-N        range of block numbers in interactive mode\n",
     "  --dbost=HOST       \[$db_host\]\n",
     "  --dbks=KEYSPACE    \[$db_keyspace\]\n",
     "  --dbuser=USER      \[$db_user\]\n",
@@ -55,7 +62,36 @@ if( not $ok or scalar(@ARGV) > 0 )
     exit 1;
 }
 
-my $db= Cassandra::Client->new(
+my $end_block;
+
+if( $interactive )
+{
+    if( not defined($interactive_range) )
+    {
+        print STDERR "range is mandatory in interactive mode\n";
+        exit 1;
+    }
+
+    if( $interactive_range !~ /^(\d+)-(\d+)$/ )
+    {
+        print STDERR "invalid format for blocks range: $interactive_range\n";
+        exit 1;
+    }
+
+    my $start_block = $1;
+    $end_block = $2;
+    if( $end_block < $start_block )
+    {
+        print STDERR "invalid range: end block cannot be lower than start\n";
+        exit 1;
+    }
+}
+
+
+
+        
+
+my $db = Cassandra::Client->new(
     contact_points => [$db_host],
     username => $db_user,
     password => $db_password,
@@ -73,6 +109,8 @@ my @batch;
 my @traces_batch;
 
 my $lowest_trace_block;
+
+if( not $interactive )
 {
     my ($r) = $db->execute('SELECT ptr FROM pointers WHERE id=2');
     my $rows = $r->rows();
@@ -126,6 +164,14 @@ Net::WebSocket::Server->new(
     on_connect => sub {
         my ($serv, $conn) = @_;
         $conn->on(
+            'ready' => sub {
+                my ($conn, $handshake) = @_;
+                if( $interactive )
+                {
+                    $conn->send_binary($interactive_range);
+                }
+            },
+                
             'binary' => sub {
                 my ($conn, $msg) = @_;
                 my ($msgtype, $opts, $js) = unpack('VVa*', $msg);
@@ -140,11 +186,24 @@ Net::WebSocket::Server->new(
                 my $ack = process_data($msgtype, $data, \$js);
                 if( $ack > 0 )
                 {
-                    $conn->send_binary(sprintf("%d", $ack));
+                    if( $interactive )
+                    {
+                        if( $ack >= $end_block - 1 )
+                        {
+                            printf STDERR ("reached end block %d, disconnecting\n", $end_block);
+                            $conn->disconnect(0, 0);
+                            $serv->shutdown();
+                        }
+                    }
+                    else
+                    {
+                        $conn->send_binary(sprintf("%d", $ack));
+                    }
+                    
                     my $period = time() - $counter_start;
                     if( $period > 0 )
                     {
-                        printf STDERR ("ack %d, period: %.2f, updates/s: %.2f, blocks/s: %.2f\n",
+                        printf STDERR ("saved %d, period: %.2f, updates/s: %.2f, blocks/s: %.2f\n",
                                        $ack, $period, $dbupdates_counter/$period, $blocks_counter/$period);
                         $counter_start = time();
                         $dbupdates_counter = 0;
@@ -171,7 +230,7 @@ sub process_data
     my $data = shift;
     my $jsptr = shift;
 
-    if( $msgtype == 1001 ) # CHRONICLE_MSGTYPE_FORK
+    if( $msgtype == 1001 and not $interactive ) # CHRONICLE_MSGTYPE_FORK
     {
         my $block_num = $data->{'block_num'};
         print STDERR "fork at $block_num\n";
@@ -247,39 +306,43 @@ sub process_data
     elsif( $msgtype == 1010 ) # CHRONICLE_MSGTYPE_BLOCK_COMPLETED
     {
         my $block_num = $data->{'block_num'};
-        my $last_irreversible = $data->{'last_irreversible'};
-
-        if( not $writing_traces )
+        # printf STDERR ("rcv %d\n", $block_num);
+        
+        if( not $interactive )
         {
-            if( $block_num + $trace_blocks >= $last_irreversible )
+            my $last_irreversible = $data->{'last_irreversible'};
+            if( not $writing_traces )
             {
-                $lowest_trace_block = $block_num+1;
-                $writing_traces = 1;
-                push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
-                printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
-            }
-        }
-        else
-        {
-            while( $lowest_trace_block + $trace_blocks < $last_irreversible )
-            {
-                push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
-                $lowest_trace_block++;
-                push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
-                if( $lowest_trace_block > $block_num )
+                if( $block_num + $trace_blocks >= $last_irreversible )
                 {
-                    $lowest_trace_block = undef;
-                    $writing_traces = 0;
-                    push_upd(['DELETE FROM pointers WHERE id=2', []]);
-                    last;
+                    $lowest_trace_block = $block_num+1;
+                    $writing_traces = 1;
+                    push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                    printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
                 }
             }
-        }
+            else
+            {
+                while( $lowest_trace_block + $trace_blocks < $last_irreversible )
+                {
+                    push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
+                    $lowest_trace_block++;
+                    push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                    if( $lowest_trace_block > $block_num )
+                    {
+                        $lowest_trace_block = undef;
+                        $writing_traces = 0;
+                        push_upd(['DELETE FROM pointers WHERE id=2', []]);
+                        last;
+                    }
+                }
+            }
                 
-        push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
-        push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
-        $blocks_counter++;
+            push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
+            push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+        }
         
+        $blocks_counter++;
         write_batch();
         
         $unconfirmed_block = $block_num;
@@ -287,6 +350,11 @@ sub process_data
         {
             $confirmed_block = $unconfirmed_block;
             return $confirmed_block;
+        }
+
+        if( $interactive and $block_num >= $end_block - 1 )
+        {
+            return $block_num;
         }
     }
 
@@ -308,10 +376,11 @@ sub push_trace
 
 sub write_batch
 {
+    $dbupdates_counter += scalar(@traces_batch) + scalar(@batch);
+    
     while( scalar(@traces_batch) > 0 )
     {
         $db->execute(@{shift(@traces_batch)});
-        $dbupdates_counter++;
     }
 
     while( scalar(@batch) > 0 )
@@ -320,7 +389,6 @@ sub write_batch
         while( scalar(@job) < 10 and scalar(@batch) > 0 )
         {
             push(@job, shift(@batch));
-            $dbupdates_counter++;
         }
         $db->batch(\@job);
     }
