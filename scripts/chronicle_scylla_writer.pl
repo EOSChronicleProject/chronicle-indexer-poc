@@ -89,17 +89,21 @@ if( $interactive )
 
 
 
-        
+my $db;
 
-my $db = Cassandra::Client->new(
-    contact_points => [$db_host],
-    username => $db_user,
-    password => $db_password,
-    keyspace => $db_keyspace,
-    request_timeout => 300,
-    );
-$db->connect();
+sub connect_db
+{
+    $db = Cassandra::Client->new(
+        contact_points => [$db_host],
+        username => $db_user,
+        password => $db_password,
+        keyspace => $db_keyspace,
+        request_timeout => 300,
+        );
+    $db->connect();
+}
 
+connect_db();
 
 my $confirmed_block = 0;
 my $unconfirmed_block = 0;
@@ -182,38 +186,59 @@ Net::WebSocket::Server->new(
                     print STDERR $js, "\n";
                     exit;
                 } 
-                
-                my $ack = process_data($msgtype, $data, \$js);
-                if( $ack > 0 )
+
+                my $done = 0;
+                my $ack = 0;
+                while( not $done )
                 {
-                    if( $interactive )
-                    {
-                        if( $ack >= $end_block - 1 )
+                    eval {
+                        $ack = process_data($msgtype, $data, \$js);
+                        if( $ack > 0 )
                         {
-                            printf STDERR ("reached end block %d, disconnecting\n", $end_block);
-                            $conn->disconnect(0, 0);
-                            $serv->shutdown();
+                            if( $interactive )
+                            {
+                                if( $ack >= $end_block - 1 )
+                                {
+                                    printf STDERR ("reached end block %d, disconnecting\n", $end_block);
+                                    $conn->disconnect(0, 0);
+                                    $serv->shutdown();
+                                }
+                            }
+                            else
+                            {
+                                $conn->send_binary(sprintf("%d", $ack));
+                            }
                         }
+                    };
+                    
+                    if( $@ )
+                    {
+                        print STDERR $@, "\n", "retrying\n";
+                        $db->shutdown();
+                        sleep(8);
+                        do {
+                            eval { sleep(2); connect_db(); };
+                        } while ($@);
                     }
                     else
                     {
-                        $conn->send_binary(sprintf("%d", $ack));
+                        $done = 1;
                     }
+                }
                     
-                    my $period = time() - $counter_start;
-                    if( $period > 0 )
-                    {
-                        printf STDERR ("saved %d, period: %.2f, updates/s: %.2f, blocks/s: %.2f\n",
-                                       $ack, $period, $dbupdates_counter/$period, $blocks_counter/$period);
-                        $counter_start = time();
-                        $dbupdates_counter = 0;
-                        $blocks_counter = 0;
-                    }
+                my $period = time() - $counter_start;
+                if( $ack > 0 and $period > 0 )
+                {
+                    printf STDERR ("saved %d, period: %.2f, updates/s: %.2f, blocks/s: %.2f\n",
+                                   $ack, $period, $dbupdates_counter/$period, $blocks_counter/$period);
+                    $counter_start = time();
+                    $dbupdates_counter = 0;
+                    $blocks_counter = 0;
                 }
             },
             'disconnect' => sub {
                 my ($conn, $code) = @_;
-                print STDERR "Disconnected: $code\n";
+                print STDERR "Disconnected\n";
                 $confirmed_block = 0;
                 $unconfirmed_block = 0;
                 $last_irreversible = 0;
