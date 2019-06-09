@@ -111,6 +111,7 @@ my $last_irreversible = 0;
 my $json = JSON->new;
 my @batch;
 my @traces_batch;
+my @actions_for_block;
 
 my $lowest_trace_block;
 
@@ -335,6 +336,9 @@ sub process_data
         
         if( not $interactive )
         {
+            push(@batch, @actions_for_block);
+            @actions_for_block = ();
+            
             my $last_irreversible = $data->{'last_irreversible'};
             if( not $writing_traces )
             {
@@ -365,6 +369,16 @@ sub process_data
                 
             push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
             push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+        }
+        else
+        {
+            my ($r) = $db->execute('SELECT count(*) FROM actions WHERE block_num=?', [$block_num]);
+            my $rows = $r->rows();
+            if( $rows->[0][0] != scalar(@actions_for_block) )
+            {
+                push(@batch, @actions_for_block);
+                @actions_for_block = ();
+            }
         }
         
         $blocks_counter++;
@@ -456,7 +470,7 @@ sub process_atrace
     
     foreach my $rcvr (keys %receivers)
     {   
-        push(@batch,
+        push(@actions_for_block,
              [ $insert_action, 
                [@{$tx}, $seq, $parent, $atrace->{'account'},
                 $atrace->{'name'}, $rcvr]]);
