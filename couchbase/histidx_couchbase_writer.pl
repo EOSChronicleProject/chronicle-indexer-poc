@@ -273,11 +273,16 @@ sub process_data
             my $block_num = $data->{'block_num'};
             my $trx_id = $trace->{'id'};
 
+            my $upd = 0;
+            if( not $interactive and $irreversible > 0 and $block_num > $irreversible )
+            {
+                $upd = 1;
+            }
             
             my $tx = {'block_num' => $block_num,
                       'block_time' => $data->{'block_timestamp'},
                       'trx_id' => $trx_id,
-                      'type' => ($block_num > $irreversible ? 'action_upd':'action') };
+                      'type' => ($upd ? 'action_upd':'action') };
             
             foreach my $atrace (@{$trace->{'action_traces'}})
             {
@@ -286,7 +291,7 @@ sub process_data
 
             if( $writing_traces )
             {
-                $data->{'type'} = ($block_num > $irreversible ? 'trace_upd':'trace');
+                $data->{'type'} = ($upd ? 'trace_upd':'trace');
                 push(@batch, Couchbase::Document->new('trace:' . $trx_id, $data));
             }
         }
