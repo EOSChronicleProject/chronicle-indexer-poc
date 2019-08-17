@@ -2,8 +2,6 @@
 
 alias q="cbc-n1ql -u $COUCH_USER -P $COUCH_PW -U couchbase://localhost/$COUCH_BUCKET"
 
-q "CREATE PRIMARY INDEX ON $COUCH_BUCKET"
-
 
 q "CREATE INDEX action_upd_01 ON $COUCH_BUCKET(TONUM(block_num) DESC) WHERE type = 'action_upd'"
 
