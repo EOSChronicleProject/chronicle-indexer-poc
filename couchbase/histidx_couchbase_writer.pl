@@ -11,6 +11,8 @@ use JSON;
 use Getopt::Long;
 use Time::Local 'timegm_nocheck';
 use Time::HiRes qw (time);
+use LWP::UserAgent;
+use LWP::Authen::Basic;
 
 use Couchbase::Bucket;
 use Couchbase::Document;
@@ -129,6 +131,8 @@ sub set_pointer
 my $confirmed_block = 0;
 my $unconfirmed_block = 0;
 my $irreversible = 0;
+my $last_checked_indexer = 0;
+
 my $json = JSON->new;
 my @batch;
 
@@ -351,7 +355,9 @@ sub process_data
             }
             $irreversible = $last_irreversible;
         }
-            
+
+        check_indexer($block_num);
+        
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
         {
@@ -491,8 +497,42 @@ sub process_atrace
     }
 }
 
+
+
+sub get_docs_pending
+{
+    my $ua = LWP::UserAgent->new();
+    $ua->default_header('Authorization' => LWP::Authen::Basic->auth_header($dbuser, $dbpw) );
+    my $res = $ua->get('http://' . $dbhost . ':9102/api/stats/histidx/action_01');
+    if(not $res->is_success() )
+    {
+        die($res->decoded_content);
+    }
+
+    my $data = $json->decode($res->decoded_content);
+    my $ret = $data->{'histidx:action_01'}{'num_docs_pending'};
+    print STDERR ("Docs pending: $ret\n");
+    return $ret;
+}
     
         
+sub check_indexer
+{
+    my $block_num = shift;
 
+    if( $block_num > $last_checked_indexer + $ack_every * 10 )
+    {
+        if( get_docs_pending() > 100000 )
+        {
+            do
+            {
+                sleep(1);
+            }
+            while( get_docs_pending() > 10000 );
+        }
+
+        $last_checked_indexer = $block_num;
+    }
+}
 
    
