@@ -16,7 +16,7 @@ q "CREATE INDEX action_01 ON $COUCH_BUCKET(TONUM(block_num) DESC) WHERE type = '
 
 q "CREATE INDEX action_02 ON $COUCH_BUCKET(receiver, TONUM(block_num) DESC, TONUM(global_seq) DESC) WHERE type = 'action'"
 
-q "CREATE INDEX action_03 ON $COUCH_BUCKET(trx_id) WHERE type = 'action'"
+q "CREATE INDEX action_03 ON $COUCH_BUCKET(SUBSTR(trx_id,0,10)) WHERE type = 'action'"
 
 
 

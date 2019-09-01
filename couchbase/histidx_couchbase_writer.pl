@@ -27,6 +27,7 @@ $| = 1;
 
 my $port = 8800;
 my $ack_every = 100;
+my $retention_every = 10000;
 
 my $interactive;
 my $interactive_range;
@@ -36,7 +37,8 @@ my $bucket = 'histidx';
 my $dbuser = 'Administrator';
 my $dbpw = 'password';
 
-my $trace_blocks = 7200*24*7;
+my $idx_retention = 10000000;
+my $trace_blocks = $idx_retention;
 
 my $ok = GetOptions
     ('port=i'    => \$port,
@@ -132,6 +134,7 @@ my $confirmed_block = 0;
 my $unconfirmed_block = 0;
 my $irreversible = 0;
 my $last_checked_indexer = 0;
+my $retention_processed = 0;
 
 my $json = JSON->new;
 my @batch;
@@ -326,18 +329,6 @@ sub process_data
                     printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
                 }
             }
-            else
-            {
-                $cb->query_slurp('DELETE FROM ' . $bucket . ' WHERE type=\'trace\' ' .
-                                 'AND TONUM(block_num) < ' . ($last_irreversible - $trace_blocks));
-
-                if( $block_num + $trace_blocks < $last_irreversible )
-                {
-                    $lowest_trace_block = 0;
-                    $writing_traces = 0;
-                    push(@batch, set_pointer_doc('lowest_trace_block', 0));
-                }                    
-            }
         }
         
         $blocks_counter++;
@@ -357,7 +348,29 @@ sub process_data
         }
 
         check_indexer($block_num);
-        
+
+        if( $retention_processed + $retention_every < $block_num )
+        {
+            $cb->query_slurp('DELETE FROM ' . $bucket . ' WHERE type=\'action\' ' .
+                             'AND TONUM(block_num) < ' . ($last_irreversible - $idx_retention));
+            
+            if( $writing_traces )
+            {
+                $cb->query_slurp('DELETE FROM ' . $bucket . ' WHERE type=\'trace\' ' .
+                                 'AND TONUM(block_num) < ' . ($last_irreversible - $trace_blocks));
+                
+                if( $block_num + $trace_blocks < $last_irreversible )
+                {
+                    $lowest_trace_block = 0;
+                    $writing_traces = 0;
+                    push(@batch, set_pointer_doc('lowest_trace_block', 0));
+                }                    
+            }
+
+            $retention_processed = $block_num;
+        }
+            
+            
         $unconfirmed_block = $block_num;
         if( $unconfirmed_block - $confirmed_block >= $ack_every )
         {
@@ -510,7 +523,8 @@ sub get_docs_pending
     }
 
     my $data = $json->decode($res->decoded_content);
-    my $ret = $data->{'histidx:action_01'}{'num_docs_pending'};
+    my $ret = $data->{'histidx:action_01'}{'num_docs_pending'} +
+        $data->{'histidx:action_01'}{'num_docs_queued'};
     print STDERR ("Docs pending: $ret\n");
     return $ret;
 }
@@ -520,15 +534,15 @@ sub check_indexer
 {
     my $block_num = shift;
 
-    if( $block_num > $last_checked_indexer + $ack_every * 10 )
+    if( $block_num > $last_checked_indexer + $ack_every * 1 )
     {
-        if( get_docs_pending() > 100000 )
+        if( get_docs_pending() > 10000 )
         {
             do
             {
                 sleep(1);
             }
-            while( get_docs_pending() > 10000 );
+            while( get_docs_pending() > 300 );
         }
 
         $last_checked_indexer = $block_num;
