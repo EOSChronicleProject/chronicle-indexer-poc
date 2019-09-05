@@ -26,12 +26,14 @@ my $port = 8800;
 my $interactive;
 my $interactive_range;
     
-my $db_host = '10.0.3.35';
-my $db_keyspace = 'eosidx';
+my $db_host = '10.0.3.1';
+my $db_keyspace = 'eos';
 my $db_user = 'cassandra';
 my $db_password = 'cassandra';
 my $ack_every = 120;
-my $trace_blocks = 7200*24*7;
+
+my $idx_retention = 10000000;
+my $trace_blocks = $idx_retention;
 
 my $ok = GetOptions
     ('port=i'    => \$port,
@@ -113,16 +115,25 @@ my @batch;
 my @traces_batch;
 my @actions_for_block;
 
+my $lowest_action_block;
 my $lowest_trace_block;
 
 if( not $interactive )
 {
-    my ($r) = $db->execute('SELECT ptr FROM pointers WHERE id=2');
+    my ($r) = $db->execute('SELECT id,ptr FROM pointers');
     my $rows = $r->rows();
-    if( scalar(@{$rows}) > 0 )
+    foreach my $row (@{$rows})
     {
-        $lowest_trace_block = $rows->[0][0];
-        printf STDERR "Lowest block with JSON traces: $lowest_trace_block\n";
+        if( $row->[0] == 2 )
+        {
+            $lowest_trace_block = $row->[1];
+            printf STDERR "Lowest block with JSON traces: $lowest_trace_block\n";
+        }
+        elsif( $row->[0] == 3 )
+        {
+            $lowest_action_block = $row->[1];
+            printf STDERR "Lowest block in actions: $lowest_action_block\n";
+        }
     }
 }
 
@@ -154,9 +165,9 @@ my %eosio_act_recipients =
 
 my $insert_action =
     'INSERT INTO actions ' .
-    '(block_num,block_time,trx_id,global_action_seq,parent,' .
+    '(block_num,block_time,trx_id,global_action_seq,action_ord,crtr_action_ord,' .
     'contract,action_name,receiver) ' .
-    'VALUES(?,?,?,?,?,?,?,?)';
+    'VALUES(?,?,?,?,?,?,?,?,?)';
 
 
 my $dbupdates_counter = 0;
@@ -284,14 +295,14 @@ sub process_data
                 push_upd(['DELETE FROM actions WHERE block_num=?', [$head]]);
                 $head--;
             }
-        }
 
-        push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num - 1]]);
-        write_batch();
+            push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num - 1]]);
+            write_batch();
+        }
         
-        $confirmed_block = $block_num;
+        $confirmed_block = $block_num - 1;
         $unconfirmed_block = 0;
-        return $block_num;
+        return $confirmed_block;
     }
     elsif( $msgtype == 1003 ) # CHRONICLE_MSGTYPE_TX_TRACE
     {
@@ -299,7 +310,7 @@ sub process_data
         if( $trace->{'status'} eq 'executed' )
         {
             my $block_num = $data->{'block_num'};
-            my $trx_id = pack('H*', $trace->{'transaction_id'});
+            my $trx_id = pack('H*', $trace->{'id'});
 
             my ($year, $mon, $mday, $hour, $min, $sec, $msec) =
                 split(/[-:.T]/, $data->{'block_timestamp'});
@@ -308,9 +319,9 @@ sub process_data
                 
             my $tx = [$block_num, 1000 * $epoch + $msec, $trx_id];
             
-            foreach my $atrace (@{$trace->{'traces'}})
+            foreach my $atrace (@{$trace->{'action_traces'}})
             {
-                process_atrace($tx, $atrace, 0);
+                process_atrace($tx, $atrace);
             }
 
             if( $writing_traces )
@@ -335,40 +346,57 @@ sub process_data
         # printf STDERR ("rcv %d\n", $block_num);
         
         if( not $interactive )
-        {
-            push(@batch, @actions_for_block);
-            @actions_for_block = ();
-            
+        {            
             my $last_irreversible = $data->{'last_irreversible'};
-            if( not $writing_traces )
+            
+            if( $block_num >= $last_irreversible - $idx_retention )
             {
-                if( $block_num + $trace_blocks >= $last_irreversible )
+                push(@batch, @actions_for_block);
+                @actions_for_block = ();
+                
+                if( not $writing_traces )
                 {
-                    $lowest_trace_block = $block_num+1;
-                    $writing_traces = 1;
-                    push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
-                    printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
-                }
-            }
-            else
-            {
-                while( $lowest_trace_block + $trace_blocks < $last_irreversible )
-                {
-                    push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
-                    $lowest_trace_block++;
-                    push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
-                    if( $lowest_trace_block > $block_num )
+                    if( $block_num >= $last_irreversible - $trace_blocks )
                     {
-                        $lowest_trace_block = undef;
-                        $writing_traces = 0;
-                        push_upd(['DELETE FROM pointers WHERE id=2', []]);
-                        last;
+                        $lowest_trace_block = $block_num+1;
+                        $writing_traces = 1;
+                        push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                        printf STDERR "Started writing JSON traces from block $lowest_trace_block\n";
                     }
                 }
-            }
+                else
+                {
+                    while( $lowest_trace_block < $last_irreversible - $trace_blocks )
+                    {
+                        push_upd(['DELETE FROM traces WHERE block_num=?', [$lowest_trace_block]]);
+                        $lowest_trace_block++;
+                        push_upd(['UPDATE pointers SET ptr=? WHERE id=2', [$lowest_trace_block]]);
+                        if( $lowest_trace_block > $block_num )
+                        {
+                            $lowest_trace_block = undef;
+                            $writing_traces = 0;
+                            push_upd(['DELETE FROM pointers WHERE id=2', []]);
+                            last;
+                        }
+                    }
+                }
                 
-            push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
-            push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+                if( not defined($lowest_action_block) )
+                {
+                    $lowest_action_block = $block_num;
+                    push_upd(['UPDATE pointers SET ptr=? WHERE id=3', [$lowest_action_block]]);
+                }      
+
+                while( $lowest_action_block < $last_irreversible - $idx_retention )
+                {
+                    push_upd(['DELETE FROM actions WHERE block_num=?', [$lowest_action_block]]);
+                    $lowest_action_block++;
+                    push_upd(['UPDATE pointers SET ptr=? WHERE id=3', [$lowest_action_block]]);
+                }
+                
+                push_upd(['UPDATE pointers SET ptr=? WHERE id=0', [$block_num]]);
+                push_upd(['UPDATE pointers SET ptr=? WHERE id=1', [$last_irreversible]]);
+            }
         }
         else
         {
@@ -440,21 +468,23 @@ sub process_atrace
 {
     my $tx = shift;
     my $atrace = shift;
-    my $parent = shift;
 
     my $receipt = $atrace->{'receipt'};
     my $seq = $receipt->{'global_sequence'};
+    my $act = $atrace->{'act'};
+    my $contract = $act->{'account'};
+    my $aname = $act->{'name'};
+    my $data = $act->{'data'};
 
     my %receivers = ($receipt->{'receiver'} => 1);
 
-    if( $atrace->{'account'} eq 'eosio' and ref($atrace->{'data'}) eq 'HASH' )
+    if( $contract eq 'eosio' and ref($data) eq 'HASH' )
     {
-        my $aname = $atrace->{'name'};
         if( defined($eosio_act_recipients{$aname}) )
         {
             foreach my $field (@{$eosio_act_recipients{$aname}})
             {
-                my $rcvr = $atrace->{'data'}{$field};
+                my $rcvr = $data->{$field};
                 if( defined($rcvr) and $rcvr ne '' )
                 {
                     $receivers{$rcvr} = 1;
@@ -472,17 +502,9 @@ sub process_atrace
     {   
         push(@actions_for_block,
              [ $insert_action, 
-               [@{$tx}, $seq, $parent, $atrace->{'account'},
-                $atrace->{'name'}, $rcvr]]);
-    }
-    
-    if( defined($atrace->{'inline_traces'}) )
-    {
-        foreach my $trace (@{$atrace->{'inline_traces'}})
-        {
-            process_atrace($tx, $trace, $seq);
-        }
-    }
+               [@{$tx}, $seq, $atrace->{'action_ordinal'}, $atrace->{'creator_action_ordinal'},
+                $contract, $aname, $rcvr]]);
+    }    
 }
     
     
